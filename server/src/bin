@@ -1,0 +1,4 @@
+g++ -c main.cpp -DMY_DEBUG
+g++ -c tool.cpp
+g++ -o Server main.o tool.o -lpthread -llog4cpp -lmysqlcppconn 
+Makefile:12: recipe for target 'Server' failed
