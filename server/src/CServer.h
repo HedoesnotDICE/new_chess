@@ -131,12 +131,11 @@ class CServer
 
     //task thread
     std::vector<pthread_t> task_threads;
-    msg::Login_info net_msg;
     bool InitTaskThreads();
     friend void * ThreadRoutine(void *);
     bool sign_in(const std::string & name, const std::string & passwd, msg::Login_info & net_msg);
     bool sign_up(std::string & name, std::string & passwd, msg::Login_info & net_msg);
-    bool match(const std::string & name, int connfd, SMatchThreadParam * match_param);
+    bool match(const std::string & name, int connfd, SMatchThreadParam * match_param, msg::Login_info & net_msg);
     bool balance(unsigned int seq, unsigned int uid, bool won);
 
 public:

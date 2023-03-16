@@ -304,7 +304,7 @@ void * ThreadRoutine(void * param)
                     name = net_msg.name();
 
                     ServerLog->info("begin to match for %s", name.c_str());
-                    if(server->match(name, connfd, match_param))
+                    if(server->match(name, connfd, match_param, net_msg))
                     {
                         ServerLog->info("match sccussed");
                     }
@@ -316,10 +316,12 @@ void * ThreadRoutine(void * param)
                 }
                 else if(sign_type == EN_END_GAME)
                 {
-                    std::string name;
-                    name = net_msg.name();
+                    // just the client player will request for balance!
+                    std::string name = net_msg.name();
+                    unsigned int game_seq = net_msg.game_seq();
+                    unsigned int uid = mysql->GetUidByName(name);
                     
-                    unsigned int game_seq = net_msg.game_seq(), uid = mysql->GetUidByName(name);
+                    ServerLog->info("balance for %s begin", name);
                     bool won = net_msg.won();
                     bool ret = server->balance(game_seq, uid, won);
                     if(ret)
@@ -339,6 +341,7 @@ void * ThreadRoutine(void * param)
                 }
             }
             ServerLog->info("thread routine end on fd: %d", connfd);
+            close(connfd);
         }  
     }
 }
@@ -385,23 +388,28 @@ bool CServer::sign_up(std::string & name, std::string & passwd, msg::Login_info 
     }
     else
     {
-        name = "'" + name;
-        name += "'";
-        passwd = "'" + passwd;
-        passwd += "'"; 
+        std::string insert_name, insert_passwd;
+        insert_name = "'" + name + "'";
+        insert_passwd = "'" + passwd + "'";
 
         oss.clear();
         oss << "insert into " << TABLENAME << "(" << NAME_FIELD << "," 
         << PASSWD_FIELD << "," << ALL_GAME_FIELD << "," << VECTORY_GAME_FIELD << ") values("
-        << name << "," << passwd << "," << 0 << 0; 
+        << insert_name << "," << insert_passwd << "," << 0 <<  "," << 0 << ")"; 
 
         stm->execute(oss.str());
 
-        oss.clear();
-        oss << "select uid from user where name='" << name << "'";
-
-        rss = stm->executeQuery(oss.str());
-        unsigned int newuid = rss->getUInt("uid");
+        rss = stm->executeQuery("select uid from user where name=" + insert_name);
+        unsigned int newuid;
+        if(rss->next())
+        {
+            newuid = rss->getUInt("uid");
+        }
+        else
+        {
+            ServerLog->error("can't get new uid");
+            return false;
+        }
         SRecord record{newuid, name, passwd, 0, 0};
         mysql->Mp_name2record[name] = record;
         mysql->Mp_uid2record[newuid] = record;
@@ -413,7 +421,7 @@ bool CServer::sign_up(std::string & name, std::string & passwd, msg::Login_info 
     return ret;
 }
 
-bool CServer::match(const std::string & name, int connfd, SMatchThreadParam * match_param)
+bool CServer::match(const std::string & name, int connfd, SMatchThreadParam * match_param, msg::Login_info & net_msg)
 {
     int ret;
     unsigned int seq, uid0, uid1 = mysql->GetUidByName(name);
@@ -427,6 +435,18 @@ bool CServer::match(const std::string & name, int connfd, SMatchThreadParam * ma
         swait_lock->is_waiting = !swait_lock->is_waiting;
         net_msg.set_result(EN_NEW_GAME_RSP_CLIENT);
         net_msg.set_ip(swait_lock->ip);
+        uid0 = swait_lock->uid;
+        swait_lock->unlock();
+
+        game_seq->lock();
+        seq = game_seq->global_seq++;
+        game_seq->unlock();
+        net_msg.set_game_seq(seq);
+
+        SMatchInfo * match_info = new SMatchInfo(uid0, uid1);
+        match_queue->lock();
+        match_queue->Mp_match_infos[seq] = match_info;
+        match_queue->unlock();
         net_msg.SerializeToString(&response);
         ret = send(connfd, response.c_str(), strlen(response.c_str()), 0);
         if(ret == -1)
@@ -434,17 +454,6 @@ bool CServer::match(const std::string & name, int connfd, SMatchThreadParam * ma
             ServerLog->error("Send data error: %d", errno);
             return false;
         }
-        uid0 = swait_lock->uid;
-        swait_lock->unlock();
-
-        game_seq->lock();
-        seq = game_seq->global_seq++;
-        game_seq->unlock();
-
-        SMatchInfo * match_info = new SMatchInfo(uid0, uid1);
-        match_queue->lock();
-        match_queue->Mp_match_infos[seq] = match_info;
-        match_queue->unlock();
         ServerLog->info("server_uid: %u, client_uid: %u, game_seq: %u", uid0, uid1, seq);
     }
     else 
@@ -473,41 +482,43 @@ bool CServer::match(const std::string & name, int connfd, SMatchThreadParam * ma
 bool CServer::balance(unsigned int seq, unsigned int uid, bool won)
 {
     match_queue->lock();
-    auto it = match_queue->Mp_match_infos.begin();
-    for(; it != match_queue->Mp_match_infos.end(); ++it)
+    if(match_queue->Mp_match_infos[seq] == NULL)
     {
-        if(it->first == seq)
-        {
-            unsigned int suid = uid, cuid = it->second->uid2;
-            if(uid != it->second->uid1)
-            {
-                ServerLog->error("game message don't match, game_seq: %u, server_uid: %u, client_uid: %u, requesting server_uid: %u",
-                    seq, it->second->uid1, it->second->uid2, uid);
-
-                return false;
-            }
-
-            if(won)
-            {
-                int s_vectory_game = mysql->GetVectoryGameByUid(suid);
-                mysql->SetVectoryGame(suid, s_vectory_game+1);
-            }
-            else
-            {
-                int c_vectory_game = mysql->GetVectoryGameByUid(cuid);
-                mysql->SetVectoryGame(cuid, c_vectory_game+1);
-            }
-            int s_all_game = mysql->GetAllGameByUid(suid), c_all_game = mysql->GetAllGameByUid(cuid);
-            mysql->SetAllGame(suid, s_all_game+1);
-            mysql->SetAllGame(cuid, c_all_game+1);
-            delete match_queue->Mp_match_infos[seq];
-            match_queue->Mp_match_infos.erase(seq);
-            match_queue->unlock();
-            return true;
-        }
+        match_queue->Mp_match_infos.erase(seq);
+        ServerLog->error("the game_seq %u dosn't exist", seq);
+        return false;
     }
+
+    auto it = match_queue->Mp_match_infos[seq];
     match_queue->unlock();
-    return false;
+    
+    unsigned int suid = it->uid1, cuid = it->uid2;
+    if(uid != cuid)
+    {
+        ServerLog->error("game message don't match, game_seq: %u, server_uid: %u, client_uid: %u, requesting client_uid: %u",
+            seq, suid, cuid, uid);
+
+        return false;
+    }
+
+    if(won)
+    {
+        //client won
+        int s_vectory_game = mysql->GetVectoryGameByUid(cuid);
+        mysql->SetVectoryGame(cuid, s_vectory_game+1);
+    }
+    else
+    {
+        //server won
+        int c_vectory_game = mysql->GetVectoryGameByUid(suid);
+        mysql->SetVectoryGame(suid, c_vectory_game+1);
+    }
+    int s_all_game = mysql->GetAllGameByUid(suid), c_all_game = mysql->GetAllGameByUid(cuid);
+    mysql->SetAllGame(suid, s_all_game+1);
+    mysql->SetAllGame(cuid, c_all_game+1);
+    delete match_queue->Mp_match_infos[seq];
+    match_queue->Mp_match_infos.erase(seq);
+    return true;
 }
 
 void CServer::Start()
@@ -528,8 +539,8 @@ void CServer::Start()
     int size;
     while(true)
     {
-        ServerLog->info("before accept");
         int connfd = accept(listenfd, (sockaddr*)(&server_addr), (socklen_t*)(&size));
+        ServerLog->info("------------------------------------\n");
         ServerLog->info("new request arrive fd: %d", connfd);
         auto tmp = new SMatchThreadParam{connfd, server_addr};
         task_queue->push(tmp);
