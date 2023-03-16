@@ -11,7 +11,7 @@ $\qquad$ 3：位于对方半区中的对方棋子只有处在己方可以攻击�
 
 下面是同一局面时双方的视野情况：
 
-<div align=center><img width="400" height="350" src="redside.png"/></div>
+<div align=center><img width="400" height="350" src="https://github.com/HedoesnotDICE/new_chess/tree/master/redside.png"/></div>
 
 <div align=center><img widt="350" height="350" src="blackside.png"/></div>
 
