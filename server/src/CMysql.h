@@ -13,7 +13,8 @@
 #include <log4cpp/Category.hh>
 
 //configure for mysql
-#define     DBHOST          "tcp://127.0.0.1:3306"
+#define     DBHOST          "tcp://192.168.1.9:3306"
+//#define     DBHOST          "tcp://127.0.0.1:3306"
 #define     USER            "zyb"
 #define     PASSWORD        "zyb151"
 #define     DATABASE        "chess_server"
